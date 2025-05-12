@@ -1,0 +1,97 @@
+---
+title: "VolunteerPeterborough"
+author: "Rebecca Han"
+date: "2025-04-29"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Upload contacts of organizations that have been inactive since 2023
+library(tidyverse)
+library(readxl)
+
+contacts <- read_csv("VolunteerPeterborough_contacts_before_delete.csv")
+contacts <- contacts %>% mutate(LAST_ACTIVITY_DATE=as.Date(LAST_ACTIVITY_DATE,format="%d-%m-%Y"))
+deletedContacts <- contacts %>% filter(LAST_ACTIVITY_DATE<as.Date("01/01/2024",format="%d/%m/%Y"))
+# Create the function
+checkNameInEmail <- function(email, first_name, last_name) {
+  email_lower <- tolower(email)
+  first_name_lower <- tolower(first_name)
+  last_name_lower <- tolower(last_name)
+  
+  first_name_in_email <- grepl(first_name_lower, email_lower)
+  last_name_in_email <- grepl(last_name_lower, email_lower)
+  
+  return(first_name_in_email | last_name_in_email)
+}
+
+# Apply the function to the contacts
+deletedContacts$NameMatch <- mapply(checkNameInEmail, deletedContacts$EMAIL, deletedContacts$FIRSTNAME, deletedContacts$LASTNAME)
+
+potentialOrganization <- deletedContacts %>% filter(NameMatch==F) %>% select(EMAIL,FIRSTNAME,LASTNAME)
+
+```
+
+```{r}
+library(shiny)
+library(DT)
+library(RecordLinkage)
+
+# Example data frame
+DF <- potentialOrganization
+DF <- DF %>% mutate(NAME=paste0(FIRSTNAME,LASTNAME),LevenshteinSim=levenshteinSim(NAME,EMAIL)) %>% arrange(LevenshteinSim)
+
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Select Rows in Data Frame"),
+  sidebarLayout(
+    sidebarPanel(
+      helpText("Select rows from the table below and click 'Save Selection'"),
+      actionButton("save_btn", "Save Selection"),
+      verbatimTextOutput("selection_output")
+    ),
+    mainPanel(
+      DT::dataTableOutput("data_table")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  selectedDF <- reactiveValues(data = data.frame())  # Make it reactive
+  
+  output$data_table <- DT::renderDataTable({
+    DT::datatable(DF, selection = "multiple")
+  })
+  
+  observeEvent(input$save_btn, {
+  selected_rows <- input$data_table_rows_selected
+  if (length(selected_rows) > 0) {
+    selectedDF <- DF[selected_rows, ]
+    saveRDS(selectedDF, "selected_data.rds")  # Save as RDS file
+    showNotification("Selection saved to selected_data.rds")
+  } else {
+    showNotification("No rows selected.")
+  }
+})
+
+}
+
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
+```{r}
+selectedDF <- readRDS("selected_data.RDS")
+potentialOrganization <-  left_join(selectedDF,deletedContacts,by=c("EMAIL","FIRSTNAME","LASTNAME")) %>% filter(!is.na(LevenshteinSim)) %>% select(-NAME,-LevenshteinSim,-NameMatch)
+potentialOrganization <- potentialOrganization[,names(contacts)]
+write.csv(potentialOrganization, "potentialOrganizations.csv", row.names = FALSE)
+
+```
+
